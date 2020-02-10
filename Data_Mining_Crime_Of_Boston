@@ -1,0 +1,329 @@
+# cleaning data, select only selected crime groups
+crime <- read.csv('crime.csv')
+
+summary(crime)
+
+
+selected <- read.csv('selected_crimegroup.csv')
+
+crime_name <- as.matrix(selected[selected$Use==1,1])
+names(selected) <- c( "crimegroup","count","use","tot")
+crime <- crime[,-c(1,2,4,7,13,17)] # reduce unused dimensions
+
+library('sqldf')
+library('data.table')
+crime <- as.data.table(crime, keep.rownames=TRUE)
+
+selected <- as.data.table(selected, keep.rownames=TRUE)
+
+result <- sqldf("SELECT * from crime as a left join selected as b on a.OFFENSe_CODE_GROUP = b.crimegroup where b.use=1")
+result <- as.matrix(result[,2:12])
+data_for_association <- result[,c(1,9)]
+write.csv(result, file = "filtedcrime.csv",row.names=FALSE)
+write.csv(data_for_association, file = "associationrule_data2.csv",row.names=FALSE)
+
+##############################Decision Tree 
+
+Timefrequency <- matrix(ncol = 5,nrow = 35064)
+colnames( Timefrequency) <- c('year','month','day','hr','freq')
+for (i in 1:35064){
+  if (i<=8760){Timefrequency[i,1] <- 2015}
+  if(i>8760 &&i<=17544){Timefrequency[i,1] <- 2016}
+  if(i>17544 &&i<=26304){Timefrequency[i,1] <- 2017}
+  if(i>26304){Timefrequency[i,1] <- 2018}
+  Timefrequency[i,4] <- i%%24
+  Timefrequency[i,5] <- 0
+  
+}
+
+Jan <- 1:31
+Feb <- 1:28
+Feb2 <- 1:29
+Mar <- 1:31
+Apr <- 1:30
+May <- 1:31
+Jun <- 1:30
+Jul <- 1:31
+Aug <- 1:31
+Sep <- 1:30
+Oct <- 1:31
+Nov <- 1:30
+Dec <- 1:31
+Monthlength <- c(31,28,31,30,31,30,31,31,30,31,30,31)
+LeapMonthlength <- c(31,29,31,30,31,30,31,31,30,31,30,31)
+monthindex <- c(744,1416,2160,2880,3624,4344,5088,5832,6552,7296,8016,8760)
+Leapmonthindex <- c(744,1440,2184,2904,3648,4368,5112,5856,6576,7320,8040,8784)
+
+NormalYear <- c(Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec)
+LeapYear <- c(Jan,Feb2,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec)
+
+#adding month and date for yr of 2015
+tempindex <- 1
+for(i in 1:8760){
+  temp <- floor(i/24)+1
+  Timefrequency[i,3] <- NormalYear[temp]
+  if(i<monthindex[tempindex]){
+    Timefrequency[i,2] <- tempindex
+  }
+  else{
+    tempindex <- tempindex+1
+    Timefrequency[i,2] <- tempindex
+  }
+}
+Timefrequency[8760,2:3] <- c(1,1)
+
+#adding month and date for yr of 2016
+tempindex <- 1
+for(i in 8761:17544){
+  temp <- floor(i/24)+1-365
+  Timefrequency[i,3] <- LeapYear[temp]
+  if(i-8760<Leapmonthindex[tempindex]){
+    Timefrequency[i,2] <- tempindex
+  }
+  else{
+    tempindex <- tempindex+1
+    Timefrequency[i,2] <- tempindex
+  }
+}
+Timefrequency[17544,2:3] <- c(1,1)
+
+
+#adding month and date for yr of 2017
+tempindex <- 1
+for(i in 17545:26304){
+  temp <- floor(i/24)+1-365*2-1
+  Timefrequency[i,3] <- NormalYear[temp]
+  if(i-17544<monthindex[tempindex]){
+    Timefrequency[i,2] <- tempindex
+  }
+  else{
+    tempindex <- tempindex+1
+    Timefrequency[i,2] <- tempindex
+  }
+}
+Timefrequency[26304,2:3] <- c(1,1)
+
+#adding month and date for yr of 2018
+tempindex <- 1
+for(i in 26305:35064){
+  temp <- floor(i/24)+1-365*3-1
+  Timefrequency[i,3] <- NormalYear[temp]
+  if(i-26304<monthindex[tempindex]){
+    Timefrequency[i,2] <- tempindex
+  }
+  else{
+    tempindex <- tempindex+1
+    Timefrequency[i,2] <- tempindex
+  }
+}
+Timefrequency[35064,2:3] <- c(1,1)
+
+
+#extract data from result & prepare data for decision tree
+data_for_classification <- matrix(nrow = 45888,ncol = 4)
+colnames(data_for_classification) <- c('year','month','day','hr')
+result <- as.data.frame(result)
+data_for_classification <- as.data.frame(data_for_classification)
+data_for_classification[,1] <- as.numeric(as.character(result[,5]))
+data_for_classification[,2] <- as.numeric(as.character(result[,6]))
+data_for_classification[,4] <- as.numeric(as.character(result[,8]))
+Day <-mday(result$OCCURRED_ON_DATE)
+data_for_classification[,3] <-as.numeric(Day)
+
+## count the frequency in Timefrequency
+## !!! this part of codes might take up to 6 hrs to execute
+for(i in 1:45888){
+  for (j in 1:35064){
+    
+    if (Timefrequency[j,1]==data_for_classification[i,1]&&
+        Timefrequency[j,2]==data_for_classification[i,2]&&
+        Timefrequency[j,3]==data_for_classification[i,3]&&
+        Timefrequency[j,4]==data_for_classification[i,4]
+    ){
+      Timefrequency[j,5] <- Timefrequency[j,5]+1
+      break
+    }
+  }
+}
+
+## clean timefreuency dataset to match with the original data(result). 
+## Match starting date and ending date.
+Timefrequency <-as.data.frame(Timefrequency)
+library(lubridate)
+Timefrequency$date <- as.Date(with(Timefrequency, paste(year, month, day,sep="-")), "%Y-%m-%d")
+Timefrequency2<- subset(Timefrequency,date >= as.POSIXct('2015-06-15') & date <= as.POSIXct('2018-09-03',))
+
+
+## Decision Tree --- Conditional Interfence Decision Tree
+library(party)
+boston <-read.csv("Boston-Regression.csv", header = TRUE,sep = ",",na.strings = "NA",stringsAsFactors = TRUE)
+boston <-boston[c(2,5,7)]
+ct<-ctree(Safety~.,data=boston)
+print(ct)
+plot(ct,type ="simple", ip_args=list(pval=FALSE),tp_args=list(abbreviate = TRUE,digits=1,fill = c("white")))
+pSafety <- predict(ct)
+#Accuracy - R-square
+(sum(boston$Safety==pSafety)) / nrow(boston)
+
+##Decision tree -- Classification Decision Tree
+library(rpart)
+library(rpart.plot)
+boston <-read.csv("Boston-Regression.csv", header = TRUE,sep = ",",na.strings = "NA",stringsAsFactors = TRUE)
+str(boston)
+boston$Year <-as.factor(boston$Year)
+boston_valid1 <- subset(boston,boston$Year == "2018")
+boston_valid2 <-boston_valid1[c(2,5,7)]
+boston <-boston[c(2,5,7)]
+smp_size <- floor(0.75 * nrow(boston))
+set.seed(123)
+train_ind <- sample(seq_len(nrow(boston)), size = smp_size)
+train <- boston[train_ind, ]
+test <- boston[-train_ind, ]
+actual <-rpart(Safety~Season+Time,data = train,method = "class")
+plot(actual)
+rpart.plot(actual)
+printcp(actual)
+
+
+
+
+
+##################################
+# summary graphs of cleaned data
+result <- as.data.frame(result)
+
+par(mar = c(1, 1, 0.5, 1)*5)
+counts_year <- table(result$YEAR)
+counts_year <- counts_year/c(6.5,12,12,9)
+xx <- barplot(counts_year,xlab="Monthly Avg. Occurrence",ylab="COUNT",ylim = c(0,1400))
+text(x = xx, y = counts_year, label = round(counts_year,2), pos = 3, cex = 0.8, col = "black")
+
+
+par(mar = c(10, 5, 3, 5))
+counts_crime <- table(result$OFFENSE_CODE_GROUP)
+counts_crime <-counts_crime/sum(counts_crime)*100
+xx <- barplot(counts_crime,xlab="",ylab="Relative Frequency %",las=3,ylim=c(0,0.4*100))
+text(x = xx, y = counts_crime, label = round(counts_crime,1), pos = 3, cex = 0.8, col = "black")
+
+par(mar = c(1, 1, 0.5, 1)*4.5)
+counts_month <- table(result$MONTH)
+counts_month <- counts_month/sum(counts_month)*100
+xx <- barplot(counts_month,xlab="Month",ylab="Relative Frequency %", ylim = c(0,0.13*100))
+text(x = xx, y = counts_month, label = round(counts_month,1), pos = 3, cex = 0.8, col = "black")
+
+counts_hour <- table(result$HOUR)
+counts_hour <- counts_hour/sum(counts_hour)*100
+xx <- barplot(counts_hour,xlab="Hour",ylab="Relative Frequency %",ylim = c(0,0.065*100))
+text(x = xx, y = counts_hour, label = round(counts_hour,1), pos = 3, cex = 0.8, col = "black")
+
+
+par(mar = c(1, 0.75, 0.5, 0.5)*6)
+counts_DAY_OF_WEEK <- table(result$DAY_OF_WEEK)
+counts_DAY_OF_WEEK <- counts_DAY_OF_WEEK/sum(counts_DAY_OF_WEEK)*100
+xx <- barplot(c(counts_DAY_OF_WEEK["Monday"], counts_DAY_OF_WEEK["Tuesday"],counts_DAY_OF_WEEK["Wednesday"],counts_DAY_OF_WEEK["Thursday"],counts_DAY_OF_WEEK["Friday"],counts_DAY_OF_WEEK["Saturday"],counts_DAY_OF_WEEK["Sunday"]),xlab = "", ylab="Relative Frequency %", ylim = c(0,0.16*100), las=2)
+text(x = xx, y =c(counts_DAY_OF_WEEK["Monday"], counts_DAY_OF_WEEK["Tuesday"],counts_DAY_OF_WEEK["Wednesday"],counts_DAY_OF_WEEK["Thursday"],counts_DAY_OF_WEEK["Friday"],counts_DAY_OF_WEEK["Saturday"],counts_DAY_OF_WEEK["Sunday"]),
+     label = round(c(counts_DAY_OF_WEEK["Monday"], counts_DAY_OF_WEEK["Tuesday"],counts_DAY_OF_WEEK["Wednesday"],counts_DAY_OF_WEEK["Thursday"],counts_DAY_OF_WEEK["Friday"],counts_DAY_OF_WEEK["Saturday"],counts_DAY_OF_WEEK["Sunday"]),1), pos = 3, cex = 0.6, col = "black")
+##perform chi-square test
+chisq.test(counts_DAY_OF_WEEK)
+
+
+
+
+
+
+
+########################
+
+# association rule
+library(arules)
+fc <-read.transactions("associationrule_data2.csv",header=TRUE,format = "single",cols=c(2,1),sep=",",rm.duplicates = f)
+inspect(head(fc,n =20))
+
+rules <- apriori(fc, parameter = list(supp = 0.3, conf = 0.1, target = "rules",minlen=2))
+sort(rules, by = "lift")
+inspect(head(sort(rules, by = "lift"), n = 10))
+
+itemFrequency(fc,"absolute")
+summary(fc)
+########################
+# prepare data for clustering analysis
+
+crime_freq <- as.data.frame(data_for_association)
+crime_freq <- crime_freq[crime_freq$STREET!='',]
+
+crime_freq <- as.data.table(crime_freq, keep.rownames=TRUE)
+sql_result <- sqldf("SELECT STREET, 
+                    count(case when OFFENSE_CODE_GROUP='Aggravated Assault' then STREET end) AS 'Aggravated Assault',
+                    count(case when OFFENSE_CODE_GROUP='Arson' then STREET end) AS 'Arson',
+                    count(case when OFFENSE_CODE_GROUP='Auto Theft' then STREET end) as 'Auto Theft',
+                    count(case when OFFENSE_CODE_GROUP='Ballistics' then STREET end) as 'Ballistics',
+
+                    count(case when OFFENSE_CODE_GROUP='Commercial Burglary' then STREET end) as 'Commercial Burglary',
+                    count(case when OFFENSE_CODE_GROUP='Criminal Harassment' then STREET end) as 'Criminal Harassment',
+                    count(case when OFFENSE_CODE_GROUP='Harassment' then STREET end) as 'Harassment',
+                    count(case when OFFENSE_CODE_GROUP='Homicide' then STREET end) as 'Homicide',
+                    count(case when OFFENSE_CODE_GROUP='Other Burglary' then STREET end) as 'Other Burglary',
+                    count(case when OFFENSE_CODE_GROUP='Residential Burglary' then STREET end) as 'Residential Burglary',
+                    count(case when OFFENSE_CODE_GROUP='Robbery' then STREET end) as 'Robbery',
+                    count(case when OFFENSE_CODE_GROUP='Simple Assault' then STREET end) as 'Simple Assault'
+                    from crime_freq group by STREET")
+
+sql_result <- as.data.frame(sql_result)
+rownames(sql_result) <- sql_result[,1]
+street <- matrix(nrow=nrow(sql_result),ncol = 1)
+street <- sql_result[,1]
+
+set.seed(2)
+km <- kmeans(sql_result[2:13],4)
+head(km$cluster,5)
+km$withinss
+km$size
+cluster_result <- as.data.frame(km$cluster)
+cluster_result[,2] <- street
+colnames(cluster_result) <- c('CLUSTER','STREET')
+write.csv(cluster_result,'cluster_result.csv')
+
+# 
+par(lwd=1,cex=0.8)
+par(mar = c(10, 4, 4, 4))
+plot(c(0), xaxt = 'n', ylab = "", type = "l", ylim = c(min(km$centers), max(km$centers)), xlim = c(0, 12),xlab = '',main = 'Avg. Count of Crime in Each Cluster')
+
+# label x-axes 
+axis(1, at = c(1:12),labels = crime_name,,las=2)
+# plot centroids 
+for (i in c(1:4)) lines(km$centers[i,], lty = i, lwd = 2, col = ifelse(i %in% c(1, 3), "black", "dark grey"))
+# name clusters
+text(x = 0.5, y = km$centers[, 1], labels = paste("Cluster", c(1:4)))
+par(mar = c(10, 4, 4, 4))
+
+
+
+# using sql to join two tables: sql_result and cluster_result, into summary_table
+sql_result <- as.data.table(sql_result, keep.rownames=F)
+cluster_result <- as.data.table(cluster_result, keep.rownames=F)
+
+summary_table <- sqldf("SELECT * from sql_result as a left join cluster_result as b on a.STREET = b.STREET")
+summary_table <- summary_table[,1:14]
+
+
+# divide the summary_table respect to each cluster
+C1 <- summary_table[summary_table$CLUSTER==1,2:13]
+C2 <- summary_table[summary_table$CLUSTER==2,2:13]
+C3 <- summary_table[summary_table$CLUSTER==3,2:13]
+C4 <- summary_table[summary_table$CLUSTER==4,2:13]
+
+
+### compute pivot table the average crime counts in each cluster
+pivot_table <- matrix(nrow = 4,ncol = 13)
+pivot_table[1,2:13] <- round(colMeans(C1),1)
+pivot_table[2,2:13] <- round(colMeans(C2),1)
+pivot_table[3,2:13] <- round(colMeans(C3),1)
+pivot_table[4,2:13] <- round(colMeans(C4),1)
+pivot_table[,1] <- c(1:4)
+pivot_table <- as.data.frame(pivot_table)
+colnames(pivot_table) <- c('Cluster',crime_name)
+
+pivot_table
+
+write.csv(pivot_table, file = "cluster_result.csv",row.names=FALSE)
+
